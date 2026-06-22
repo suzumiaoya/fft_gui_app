@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fft-gui-app"
+version = "0.1.0"
+description = "CSV FFT GUI analyzer with C code generation"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "customtkinter>=5.2.2",
+    "numpy>=2.3.4",
+    "pandas>=3.0.3",
+    "matplotlib>=3.10.9",
+]
+
+[project.scripts]
+fft-gui-app = "fft_gui_app.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
