@@ -5,25 +5,38 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
+import pandas as pd
 from matplotlib import font_manager, rcParams
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
 
 from fft_gui_app.exceptions import ValidationError
-from fft_gui_app.models import CsvImportConfig, FilterConfig, SpectrumConfig, SpectrumResult
+from fft_gui_app.models import (
+    CsvImportConfig,
+    FilterConfig,
+    PreprocessConfig,
+    PreviewResult,
+    SpectrumConfig,
+    SpectrumResult,
+)
 from fft_gui_app.services.code_generator import CodeGenerator
 from fft_gui_app.services.csv_loader import AnalysisFrame, CsvLoader
 from fft_gui_app.services.fft_analyzer import FftAnalyzer
+from fft_gui_app.services.filter_preview_service import FilterPreviewService
 
 
 PLOT_MODE_LABELS = {"叠加对比": "overlay", "分别显示": "separate"}
-PLOT_MODE_VALUES = {value: label for label, value in PLOT_MODE_LABELS.items()}
 MAGNITUDE_MODE_LABELS = {"线性幅值": "linear", "dB": "db"}
-MAGNITUDE_MODE_VALUES = {value: label for label, value in MAGNITUDE_MODE_LABELS.items()}
 WINDOW_LABELS = {"Hann": "hann", "无窗": "none"}
-WINDOW_VALUES = {value: label for label, value in WINDOW_LABELS.items()}
-FILTER_TYPE_LABELS = {"低通": "lowpass", "高通": "highpass"}
-FILTER_TYPE_VALUES = {value: label for label, value in FILTER_TYPE_LABELS.items()}
+METHOD_LABELS = {"FFT 幅度谱": "fft", "Welch PSD": "welch"}
+WELCH_WINDOW_LABELS = {"Hann": "hann", "矩形窗": "boxcar"}
+FILTER_KIND_LABELS = {
+    "低通": "lowpass",
+    "高通": "highpass",
+    "带通": "bandpass",
+    "带阻": "bandstop",
+}
+DETREND_LABELS = {"不处理": "none", "去直流": "constant", "去线性趋势": "linear"}
 
 
 def configure_matplotlib_fonts() -> None:
@@ -50,19 +63,20 @@ class FftGuiApp(ctk.CTk):
         ctk.set_appearance_mode("system")
         ctk.set_default_color_theme("blue")
 
-        self.title("CSV FFT 频谱分析工具")
-        self.geometry("1440x860")
-        self.minsize(1200, 760)
+        self.title("CSV FFT 频谱与滤波预览工具")
+        self.geometry("1500x900")
+        self.minsize(1280, 800)
 
         self.csv_loader = CsvLoader()
         self.fft_analyzer = FftAnalyzer()
+        self.filter_preview_service = FilterPreviewService(spectrum_analyzer=self.fft_analyzer)
         self.code_generator = CodeGenerator()
 
         self.current_csv_path: str | None = None
         self.preview_columns: list[str] = []
         self.analysis_frame: AnalysisFrame | None = None
         self.current_spectrum_result: SpectrumResult | None = None
-        self.last_inferred_sample_rate_hz: float | None = None
+        self.current_preview_result: PreviewResult | None = None
 
         self._init_variables()
         self._build_layout()
@@ -71,36 +85,49 @@ class FftGuiApp(ctk.CTk):
     def _init_variables(self) -> None:
         self.time_column_var = tk.StringVar(value="")
         self.sample_rate_var = tk.StringVar(value="")
+
         self.plot_mode_var = tk.StringVar(value="叠加对比")
         self.magnitude_mode_var = tk.StringVar(value="线性幅值")
         self.window_var = tk.StringVar(value="Hann")
-        self.filter_type_var = tk.StringVar(value="低通")
-        self.cutoff_var = tk.StringVar(value="")
+        self.method_var = tk.StringVar(value="FFT 幅度谱")
+
+        self.filter_kind_var = tk.StringVar(value="低通")
+        self.low_cutoff_var = tk.StringVar(value="")
+        self.high_cutoff_var = tk.StringVar(value="")
         self.notch_var = tk.StringVar(value="")
+        self.preview_signal_var = tk.StringVar(value="")
+
+        self.advanced_visible_var = tk.BooleanVar(value=False)
+        self.filter_order_var = tk.StringVar(value="4")
+        self.notch_q_var = tk.StringVar(value="30")
+        self.detrend_var = tk.StringVar(value="去直流")
+        self.welch_window_var = tk.StringVar(value="Hann")
+        self.welch_nperseg_var = tk.StringVar(value="")
+        self.welch_noverlap_var = tk.StringVar(value="")
 
     def _build_layout(self) -> None:
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        self.control_frame = ctk.CTkScrollableFrame(self, width=430, corner_radius=0)
+        self.control_frame = ctk.CTkScrollableFrame(self, width=460, corner_radius=0)
         self.control_frame.grid(row=0, column=0, sticky="nsew")
         self.control_frame.grid_columnconfigure(0, weight=1)
 
-        self.plot_frame = ctk.CTkFrame(self, corner_radius=0)
-        self.plot_frame.grid(row=0, column=1, sticky="nsew")
-        self.plot_frame.grid_rowconfigure(1, weight=1)
-        self.plot_frame.grid_columnconfigure(0, weight=1)
+        self.visual_frame = ctk.CTkFrame(self, corner_radius=0)
+        self.visual_frame.grid(row=0, column=1, sticky="nsew")
+        self.visual_frame.grid_rowconfigure(1, weight=1)
+        self.visual_frame.grid_columnconfigure(0, weight=1)
 
         self._build_control_panel()
-        self._build_plot_panel()
+        self._build_visual_panel()
 
     def _build_control_panel(self) -> None:
         row = 0
 
         title = ctk.CTkLabel(
             self.control_frame,
-            text="CSV FFT 频谱分析",
+            text="FFT 频谱与滤波预览",
             font=ctk.CTkFont(size=24, weight="bold"),
         )
         title.grid(row=row, column=0, padx=18, pady=(18, 12), sticky="w")
@@ -112,7 +139,7 @@ class FftGuiApp(ctk.CTk):
         ctk.CTkButton(file_content, text="导入 CSV", command=self._on_import_csv).grid(
             row=0, column=0, padx=12, pady=(12, 8), sticky="ew"
         )
-        self.file_label = ctk.CTkLabel(file_content, text="当前文件：未选择", justify="left", wraplength=360)
+        self.file_label = ctk.CTkLabel(file_content, text="当前文件：未选择", justify="left", wraplength=390)
         self.file_label.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="w")
         row += 1
 
@@ -133,7 +160,6 @@ class FftGuiApp(ctk.CTk):
         listbox_frame = ctk.CTkFrame(data_content, fg_color="transparent")
         listbox_frame.grid(row=3, column=0, padx=12, pady=(0, 12), sticky="ew")
         listbox_frame.grid_columnconfigure(0, weight=1)
-        listbox_frame.grid_rowconfigure(0, weight=1)
 
         self.signal_listbox = tk.Listbox(
             listbox_frame,
@@ -154,85 +180,128 @@ class FftGuiApp(ctk.CTk):
         self.sample_rate_hint.grid(row=6, column=0, padx=12, pady=(0, 12), sticky="w")
         row += 1
 
-        spectrum_section, spectrum_content = self._section_frame("频谱参数")
-        spectrum_section.grid(row=row, column=0, padx=18, pady=10, sticky="ew")
-        spectrum_content.grid_columnconfigure((0, 1), weight=1)
-
-        ctk.CTkLabel(spectrum_content, text="显示方式").grid(row=0, column=0, padx=12, pady=(12, 4), sticky="w")
-        ctk.CTkLabel(spectrum_content, text="幅值模式").grid(row=0, column=1, padx=12, pady=(12, 4), sticky="w")
-        ctk.CTkOptionMenu(
-            spectrum_content,
-            values=list(PLOT_MODE_LABELS.keys()),
-            variable=self.plot_mode_var,
-        ).grid(row=1, column=0, padx=12, pady=(0, 12), sticky="ew")
-        ctk.CTkOptionMenu(
-            spectrum_content,
-            values=list(MAGNITUDE_MODE_LABELS.keys()),
-            variable=self.magnitude_mode_var,
-        ).grid(row=1, column=1, padx=12, pady=(0, 12), sticky="ew")
-
-        ctk.CTkLabel(spectrum_content, text="窗口函数").grid(row=2, column=0, padx=12, pady=(0, 4), sticky="w")
-        ctk.CTkOptionMenu(
-            spectrum_content,
-            values=list(WINDOW_LABELS.keys()),
-            variable=self.window_var,
-        ).grid(row=3, column=0, padx=12, pady=(0, 12), sticky="ew")
-        ctk.CTkButton(spectrum_content, text="生成频谱", command=self._on_generate_spectrum).grid(
-            row=3, column=1, padx=12, pady=(0, 12), sticky="ew"
-        )
-        row += 1
-
-        filter_section, filter_content = self._section_frame("代码生成参数")
-        filter_section.grid(row=row, column=0, padx=18, pady=10, sticky="ew")
-        filter_content.grid_columnconfigure((0, 1), weight=1)
-
-        ctk.CTkLabel(filter_content, text="滤波类型").grid(row=0, column=0, padx=12, pady=(12, 4), sticky="w")
-        ctk.CTkLabel(filter_content, text="截止频率 Hz").grid(row=0, column=1, padx=12, pady=(12, 4), sticky="w")
-        ctk.CTkOptionMenu(
-            filter_content,
-            values=list(FILTER_TYPE_LABELS.keys()),
-            variable=self.filter_type_var,
-        ).grid(row=1, column=0, padx=12, pady=(0, 12), sticky="ew")
-        ctk.CTkEntry(filter_content, textvariable=self.cutoff_var).grid(
-            row=1, column=1, padx=12, pady=(0, 12), sticky="ew"
-        )
-
-        ctk.CTkLabel(filter_content, text="陷波频率 Hz（用逗号分隔）").grid(
-            row=2, column=0, columnspan=2, padx=12, pady=(0, 4), sticky="w"
-        )
-        ctk.CTkEntry(filter_content, textvariable=self.notch_var).grid(
-            row=3, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
-        )
-        ctk.CTkButton(filter_content, text="导出 C 代码", command=self._on_export_code).grid(
-            row=4, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
-        )
+        tab_section, tab_content = self._section_frame("分析功能")
+        tab_section.grid(row=row, column=0, padx=18, pady=10, sticky="ew")
+        tab_content.grid_columnconfigure(0, weight=1)
+        self.analysis_tabview = ctk.CTkTabview(tab_content)
+        self.analysis_tabview.grid(row=0, column=0, padx=12, pady=12, sticky="ew")
+        self.analysis_tabview.add("频谱分析")
+        self.analysis_tabview.add("滤波预览")
+        self._build_spectrum_controls(self.analysis_tabview.tab("频谱分析"))
+        self._build_preview_controls(self.analysis_tabview.tab("滤波预览"))
         row += 1
 
         preview_section, preview_content = self._section_frame("CSV 预览")
         preview_section.grid(row=row, column=0, padx=18, pady=(10, 18), sticky="nsew")
         preview_content.grid_columnconfigure(0, weight=1)
         preview_content.grid_rowconfigure(0, weight=1)
-
         self.preview_tree = ttk.Treeview(preview_content, show="headings", height=10)
         self.preview_tree.grid(row=0, column=0, padx=12, pady=12, sticky="nsew")
         preview_scroll = ttk.Scrollbar(preview_content, orient="vertical", command=self.preview_tree.yview)
         preview_scroll.grid(row=0, column=1, pady=12, sticky="ns")
         self.preview_tree.configure(yscrollcommand=preview_scroll.set)
 
-    def _build_plot_panel(self) -> None:
-        header = ctk.CTkFrame(self.plot_frame, corner_radius=0)
+    def _build_spectrum_controls(self, parent: ctk.CTkFrame) -> None:
+        parent.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkLabel(parent, text="频谱方法").grid(row=0, column=0, padx=12, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(parent, text="显示方式").grid(row=0, column=1, padx=12, pady=(12, 4), sticky="w")
+        ctk.CTkOptionMenu(parent, values=list(METHOD_LABELS.keys()), variable=self.method_var).grid(
+            row=1, column=0, padx=12, pady=(0, 12), sticky="ew"
+        )
+        ctk.CTkOptionMenu(parent, values=list(PLOT_MODE_LABELS.keys()), variable=self.plot_mode_var).grid(
+            row=1, column=1, padx=12, pady=(0, 12), sticky="ew"
+        )
+
+        ctk.CTkLabel(parent, text="幅值模式").grid(row=2, column=0, padx=12, pady=(0, 4), sticky="w")
+        ctk.CTkLabel(parent, text="窗口函数").grid(row=2, column=1, padx=12, pady=(0, 4), sticky="w")
+        ctk.CTkOptionMenu(parent, values=list(MAGNITUDE_MODE_LABELS.keys()), variable=self.magnitude_mode_var).grid(
+            row=3, column=0, padx=12, pady=(0, 12), sticky="ew"
+        )
+        ctk.CTkOptionMenu(parent, values=list(WINDOW_LABELS.keys()), variable=self.window_var).grid(
+            row=3, column=1, padx=12, pady=(0, 12), sticky="ew"
+        )
+
+        ctk.CTkButton(parent, text="生成频谱", command=self._on_generate_spectrum).grid(
+            row=4, column=0, columnspan=2, padx=12, pady=(4, 12), sticky="ew"
+        )
+
+    def _build_preview_controls(self, parent: ctk.CTkFrame) -> None:
+        parent.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkLabel(parent, text="预览列").grid(row=0, column=0, padx=12, pady=(12, 4), sticky="w")
+        self.preview_signal_menu = ctk.CTkOptionMenu(parent, values=[""], variable=self.preview_signal_var)
+        self.preview_signal_menu.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="ew")
+
+        ctk.CTkLabel(parent, text="滤波类型").grid(row=0, column=1, padx=12, pady=(12, 4), sticky="w")
+        self.filter_kind_menu = ctk.CTkOptionMenu(parent, values=list(FILTER_KIND_LABELS.keys()), variable=self.filter_kind_var)
+        self.filter_kind_menu.grid(row=1, column=1, padx=12, pady=(0, 12), sticky="ew")
+
+        ctk.CTkLabel(parent, text="低截止频率 Hz").grid(row=2, column=0, padx=12, pady=(0, 4), sticky="w")
+        ctk.CTkLabel(parent, text="高截止频率 Hz").grid(row=2, column=1, padx=12, pady=(0, 4), sticky="w")
+        ctk.CTkEntry(parent, textvariable=self.low_cutoff_var).grid(row=3, column=0, padx=12, pady=(0, 12), sticky="ew")
+        ctk.CTkEntry(parent, textvariable=self.high_cutoff_var).grid(row=3, column=1, padx=12, pady=(0, 12), sticky="ew")
+
+        ctk.CTkLabel(parent, text="陷波频率 Hz（逗号分隔）").grid(
+            row=4, column=0, columnspan=2, padx=12, pady=(0, 4), sticky="w"
+        )
+        ctk.CTkEntry(parent, textvariable=self.notch_var).grid(
+            row=5, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
+        )
+
+        self.advanced_toggle = ctk.CTkButton(
+            parent,
+            text="显示高级参数",
+            command=self._toggle_advanced_options,
+        )
+        self.advanced_toggle.grid(row=6, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew")
+
+        self.advanced_frame = ctk.CTkFrame(parent)
+        self.advanced_frame.grid(row=7, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew")
+        self.advanced_frame.grid_columnconfigure((0, 1), weight=1)
+        self._build_advanced_controls(self.advanced_frame)
+        self.advanced_frame.grid_remove()
+
+        ctk.CTkButton(parent, text="生成滤波预览", command=self._on_generate_preview).grid(
+            row=8, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="ew"
+        )
+        ctk.CTkButton(parent, text="导出 C 代码", command=self._on_export_code).grid(
+            row=9, column=0, columnspan=2, padx=12, pady=(0, 12), sticky="ew"
+        )
+
+    def _build_advanced_controls(self, parent: ctk.CTkFrame) -> None:
+        ctk.CTkLabel(parent, text="滤波阶数").grid(row=0, column=0, padx=12, pady=(12, 4), sticky="w")
+        ctk.CTkLabel(parent, text="陷波 Q").grid(row=0, column=1, padx=12, pady=(12, 4), sticky="w")
+        ctk.CTkEntry(parent, textvariable=self.filter_order_var).grid(row=1, column=0, padx=12, pady=(0, 12), sticky="ew")
+        ctk.CTkEntry(parent, textvariable=self.notch_q_var).grid(row=1, column=1, padx=12, pady=(0, 12), sticky="ew")
+
+        ctk.CTkLabel(parent, text="预处理").grid(row=2, column=0, padx=12, pady=(0, 4), sticky="w")
+        ctk.CTkLabel(parent, text="Welch 窗").grid(row=2, column=1, padx=12, pady=(0, 4), sticky="w")
+        ctk.CTkOptionMenu(parent, values=list(DETREND_LABELS.keys()), variable=self.detrend_var).grid(
+            row=3, column=0, padx=12, pady=(0, 12), sticky="ew"
+        )
+        ctk.CTkOptionMenu(parent, values=list(WELCH_WINDOW_LABELS.keys()), variable=self.welch_window_var).grid(
+            row=3, column=1, padx=12, pady=(0, 12), sticky="ew"
+        )
+
+        ctk.CTkLabel(parent, text="Welch nperseg").grid(row=4, column=0, padx=12, pady=(0, 4), sticky="w")
+        ctk.CTkLabel(parent, text="Welch noverlap").grid(row=4, column=1, padx=12, pady=(0, 4), sticky="w")
+        ctk.CTkEntry(parent, textvariable=self.welch_nperseg_var).grid(row=5, column=0, padx=12, pady=(0, 12), sticky="ew")
+        ctk.CTkEntry(parent, textvariable=self.welch_noverlap_var).grid(row=5, column=1, padx=12, pady=(0, 12), sticky="ew")
+
+    def _build_visual_panel(self) -> None:
+        header = ctk.CTkFrame(self.visual_frame, corner_radius=0)
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
 
         self.status_label = ctk.CTkLabel(header, text="", anchor="w")
         self.status_label.grid(row=0, column=0, padx=16, pady=12, sticky="ew")
 
-        self.figure = Figure(figsize=(8, 6), dpi=100)
-        self.canvas = FigureCanvasTkAgg(self.figure, master=self.plot_frame)
-        self.canvas_widget = self.canvas.get_tk_widget()
-        self.canvas_widget.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.figure = Figure(figsize=(10, 8), dpi=100)
+        self.canvas = FigureCanvasTkAgg(self.figure, master=self.visual_frame)
+        self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
 
-        toolbar_frame = ctk.CTkFrame(self.plot_frame, corner_radius=0)
+        toolbar_frame = ctk.CTkFrame(self.visual_frame, corner_radius=0)
         toolbar_frame.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
         self.toolbar = NavigationToolbar2Tk(self.canvas, toolbar_frame, pack_toolbar=False)
         self.toolbar.update()
@@ -243,11 +312,22 @@ class FftGuiApp(ctk.CTk):
     def _section_frame(self, title: str) -> tuple[ctk.CTkFrame, ctk.CTkFrame]:
         frame = ctk.CTkFrame(self.control_frame)
         frame.grid_columnconfigure(0, weight=1)
-        label = ctk.CTkLabel(frame, text=title, font=ctk.CTkFont(size=16, weight="bold"))
-        label.grid(row=0, column=0, padx=12, pady=(10, 4), sticky="w")
+        ctk.CTkLabel(frame, text=title, font=ctk.CTkFont(size=16, weight="bold")).grid(
+            row=0, column=0, padx=12, pady=(10, 4), sticky="w"
+        )
         content = ctk.CTkFrame(frame, fg_color="transparent")
         content.grid(row=1, column=0, sticky="ew")
         return frame, content
+
+    def _toggle_advanced_options(self) -> None:
+        if self.advanced_visible_var.get():
+            self.advanced_frame.grid_remove()
+            self.advanced_toggle.configure(text="显示高级参数")
+            self.advanced_visible_var.set(False)
+        else:
+            self.advanced_frame.grid()
+            self.advanced_toggle.configure(text="隐藏高级参数")
+            self.advanced_visible_var.set(True)
 
     def _on_import_csv(self) -> None:
         path = filedialog.askopenfilename(
@@ -264,10 +344,10 @@ class FftGuiApp(ctk.CTk):
             return
 
         self.current_csv_path = path
-        self.preview_columns = preview.columns
         self.analysis_frame = None
         self.current_spectrum_result = None
-        self.last_inferred_sample_rate_hz = None
+        self.current_preview_result = None
+        self.preview_columns = preview.columns
 
         self.file_label.configure(text=f"当前文件：{path}")
         self._populate_columns(preview.columns)
@@ -279,9 +359,14 @@ class FftGuiApp(ctk.CTk):
         menu_values = [""] + columns
         self.time_column_menu.configure(values=menu_values)
         self.time_column_var.set("")
+
         self.signal_listbox.delete(0, tk.END)
         for column in columns:
             self.signal_listbox.insert(tk.END, column)
+
+        preview_values = columns or [""]
+        self.preview_signal_menu.configure(values=preview_values)
+        self.preview_signal_var.set(preview_values[0] if preview_values else "")
 
         self.sample_rate_var.set("")
         self.sample_rate_hint.configure(text="有时间列时自动推导，可手动覆盖。")
@@ -304,32 +389,25 @@ class FftGuiApp(ctk.CTk):
             return
 
         try:
-            sample_rate_resolution = self.csv_loader.resolve_sample_rate(
+            sample_rate = self.csv_loader.resolve_sample_rate(
                 file_path=self.current_csv_path,
                 time_column=selected,
-                manual_sample_rate_hz=self._parse_optional_float(self.sample_rate_var.get()),
+                manual_sample_rate_hz=self._parse_optional_float(self.sample_rate_var.get(), "采样率"),
             )
         except ValidationError:
-            self.sample_rate_hint.configure(text="时间列已选择；生成频谱时会再次校验采样率。")
+            self.sample_rate_hint.configure(text="时间列已选择；分析时会再次校验采样率。")
             return
 
-        self.last_inferred_sample_rate_hz = sample_rate_resolution.inferred_sample_rate_hz
-        if sample_rate_resolution.inferred_sample_rate_hz is not None and not self.sample_rate_var.get().strip():
-            self.sample_rate_var.set(f"{sample_rate_resolution.inferred_sample_rate_hz:.6f}")
-        if sample_rate_resolution.inferred_sample_rate_hz is not None:
-            self.sample_rate_hint.configure(
-                text=f"自动推导采样率：{sample_rate_resolution.inferred_sample_rate_hz:.6f} Hz，可手动覆盖。"
-            )
+        if sample_rate.inferred_sample_rate_hz is not None and not self.sample_rate_var.get().strip():
+            self.sample_rate_var.set(f"{sample_rate.inferred_sample_rate_hz:.6f}")
+        if sample_rate.inferred_sample_rate_hz is not None:
+            self.sample_rate_hint.configure(text=f"自动推导采样率：{sample_rate.inferred_sample_rate_hz:.6f} Hz，可手动覆盖。")
 
     def _on_generate_spectrum(self) -> None:
         try:
             import_config = self._build_import_config()
             analysis = self.csv_loader.build_analysis_frame(import_config)
-            spectrum_config = SpectrumConfig(
-                plot_mode=PLOT_MODE_LABELS[self.plot_mode_var.get()],
-                magnitude_mode=MAGNITUDE_MODE_LABELS[self.magnitude_mode_var.get()],
-                window=WINDOW_LABELS[self.window_var.get()],
-            )
+            spectrum_config = self._build_spectrum_config(sample_count=len(analysis.dataframe))
             spectrum_result = self.fft_analyzer.compute(
                 frame=analysis.dataframe,
                 signal_columns=import_config.signal_columns,
@@ -342,20 +420,52 @@ class FftGuiApp(ctk.CTk):
 
         self.analysis_frame = analysis
         self.current_spectrum_result = spectrum_result
-        self.last_inferred_sample_rate_hz = analysis.inferred_sample_rate_hz
-        if analysis.inferred_sample_rate_hz is not None:
-            self.sample_rate_hint.configure(
-                text=f"自动推导采样率：{analysis.inferred_sample_rate_hz:.6f} Hz，可手动覆盖。"
-            )
         self._render_spectrum_plot(spectrum_result)
         self._set_status(
             f"频谱生成完成：{len(import_config.signal_columns)} 个信号，"
-            f"{analysis.sample_rate_hz:.3f} Hz，{spectrum_result.sample_count} 个样本。"
+            f"{analysis.sample_rate_hz:.3f} Hz，{spectrum_result.method.upper()}。"
+        )
+
+    def _on_generate_preview(self) -> None:
+        try:
+            import_config = self._build_import_config(require_signals=False)
+            analysis = self.csv_loader.build_analysis_frame(
+                CsvImportConfig(
+                    file_path=import_config.file_path,
+                    time_column=import_config.time_column,
+                    signal_columns=[self._require_preview_signal()],
+                    manual_sample_rate_hz=import_config.manual_sample_rate_hz,
+                )
+            )
+            filter_config = self._build_filter_config(sample_rate_hz=analysis.sample_rate_hz)
+            preprocess_config = self._build_preprocess_config()
+            preview_result = self.filter_preview_service.preview(
+                frame=analysis.dataframe,
+                signal_column=self._require_preview_signal(),
+                filter_config=filter_config,
+                preprocess_config=preprocess_config,
+            )
+        except ValidationError as exc:
+            self._show_error(str(exc))
+            return
+
+        self.analysis_frame = analysis
+        self.current_preview_result = preview_result
+        self._render_preview_plot(preview_result)
+        self._set_status(
+            f"滤波预览完成：{self._require_preview_signal()}，"
+            f"{filter_config.filter_kind}，{preview_result.sample_count} 个样本。"
         )
 
     def _on_export_code(self) -> None:
         try:
-            filter_config = self._build_filter_config()
+            import_config = self._build_import_config(require_signals=False)
+            sample_rate_resolution = self.csv_loader.resolve_sample_rate(
+                file_path=import_config.file_path,
+                time_column=import_config.time_column,
+                manual_sample_rate_hz=import_config.manual_sample_rate_hz,
+            )
+            filter_config = self._build_filter_config(sample_rate_hz=sample_rate_resolution.sample_rate_hz)
         except ValidationError as exc:
             self._show_error(str(exc))
             return
@@ -370,10 +480,7 @@ class FftGuiApp(ctk.CTk):
             return
 
         try:
-            header_path, source_path = self.code_generator.render(
-                filter_config,
-                str(Path(path).with_suffix("")),
-            )
+            header_path, source_path = self.code_generator.render(filter_config, str(Path(path).with_suffix("")))
         except ValidationError as exc:
             self._show_error(str(exc))
             return
@@ -381,63 +488,115 @@ class FftGuiApp(ctk.CTk):
         self._set_status(f"已导出代码：{header_path.name} 和 {source_path.name}")
         messagebox.showinfo("导出成功", f"已生成：\n{header_path}\n{source_path}")
 
-    def _build_import_config(self) -> CsvImportConfig:
+    def _build_import_config(self, require_signals: bool = True) -> CsvImportConfig:
         if not self.current_csv_path:
             raise ValidationError("请先导入 CSV 文件。")
+
+        signal_columns = self._get_selected_signal_columns()
+        if require_signals and not signal_columns:
+            raise ValidationError("请至少选择一个信号列。")
 
         return CsvImportConfig(
             file_path=self.current_csv_path,
             time_column=self.time_column_var.get() or None,
-            signal_columns=self._get_selected_signal_columns(),
-            manual_sample_rate_hz=self._parse_optional_float(self.sample_rate_var.get()),
+            signal_columns=signal_columns if signal_columns else [self._require_preview_signal()],
+            manual_sample_rate_hz=self._parse_optional_float(self.sample_rate_var.get(), "采样率"),
         )
 
-    def _build_filter_config(self) -> FilterConfig:
-        if not self.current_csv_path:
-            raise ValidationError("请先导入 CSV 文件。")
+    def _build_spectrum_config(self, sample_count: int) -> SpectrumConfig:
+        method = METHOD_LABELS[self.method_var.get()]
+        magnitude_mode = MAGNITUDE_MODE_LABELS[self.magnitude_mode_var.get()]
+        if method == "welch":
+            magnitude_mode = "linear"
 
-        sample_rate_resolution = self.csv_loader.resolve_sample_rate(
-            file_path=self.current_csv_path,
-            time_column=self.time_column_var.get() or None,
-            manual_sample_rate_hz=self._parse_optional_float(self.sample_rate_var.get()),
+        return SpectrumConfig(
+            method=method,
+            plot_mode=PLOT_MODE_LABELS[self.plot_mode_var.get()],
+            magnitude_mode=magnitude_mode,
+            window=WINDOW_LABELS[self.window_var.get()],
+            welch_window=WELCH_WINDOW_LABELS[self.welch_window_var.get()],
+            welch_nperseg=self._parse_optional_int(
+                self.welch_nperseg_var.get(),
+                "Welch nperseg",
+                default=min(1024, sample_count),
+            ),
+            welch_noverlap=self._parse_optional_int(
+                self.welch_noverlap_var.get(),
+                "Welch noverlap",
+                default=min(1024, sample_count) // 2,
+            ),
         )
+
+    def _build_preprocess_config(self) -> PreprocessConfig:
+        return PreprocessConfig(detrend_mode=DETREND_LABELS[self.detrend_var.get()])
+
+    def _build_filter_config(self, sample_rate_hz: float) -> FilterConfig:
+        filter_kind = FILTER_KIND_LABELS[self.filter_kind_var.get()]
+        low_cutoff = self._parse_optional_float(self.low_cutoff_var.get(), "低截止频率")
+        high_cutoff = self._parse_optional_float(self.high_cutoff_var.get(), "高截止频率")
+
+        if filter_kind in {"lowpass", "highpass"} and low_cutoff is None:
+            raise ValidationError("低通和高通滤波必须填写低截止频率。")
+        if filter_kind in {"bandpass", "bandstop"} and (low_cutoff is None or high_cutoff is None):
+            raise ValidationError("带通和带阻滤波必须填写上下截止频率。")
+
         return FilterConfig(
-            filter_type=FILTER_TYPE_LABELS[self.filter_type_var.get()],
-            cutoff_hz=self._parse_required_float(self.cutoff_var.get(), "截止频率"),
+            filter_kind=filter_kind,
+            low_cutoff_hz=low_cutoff,
+            high_cutoff_hz=high_cutoff,
             notch_freqs_hz=self._parse_notch_frequencies(self.notch_var.get()),
-            sample_rate_hz=sample_rate_resolution.sample_rate_hz,
+            notch_q=self._parse_required_float(self.notch_q_var.get(), "陷波 Q"),
+            order=self._parse_required_int(self.filter_order_var.get(), "滤波阶数"),
+            sample_rate_hz=sample_rate_hz,
         )
 
     def _get_selected_signal_columns(self) -> list[str]:
-        selected_indices = self.signal_listbox.curselection()
-        return [self.signal_listbox.get(index) for index in selected_indices]
+        return [self.signal_listbox.get(index) for index in self.signal_listbox.curselection()]
 
-    def _parse_optional_float(self, raw_value: str) -> float | None:
+    def _require_preview_signal(self) -> str:
+        value = self.preview_signal_var.get().strip()
+        if not value:
+            raise ValidationError("请选择一个预览列。")
+        return value
+
+    def _parse_optional_float(self, raw_value: str, field_name: str) -> float | None:
         if not raw_value.strip():
             return None
         try:
             return float(raw_value)
         except ValueError as exc:
-            raise ValidationError("采样率必须是数字。") from exc
+            raise ValidationError(f"{field_name}必须是数字。") from exc
 
     def _parse_required_float(self, raw_value: str, field_name: str) -> float:
-        if not raw_value.strip():
+        value = self._parse_optional_float(raw_value, field_name)
+        if value is None:
             raise ValidationError(f"{field_name}不能为空。")
+        return value
+
+    def _parse_optional_int(self, raw_value: str, field_name: str, default: int | None = None) -> int | None:
+        if not raw_value.strip():
+            return default
         try:
-            return float(raw_value)
+            return int(raw_value)
         except ValueError as exc:
-            raise ValidationError(f"{field_name}必须是数字。") from exc
+            raise ValidationError(f"{field_name}必须是整数。") from exc
+
+    def _parse_required_int(self, raw_value: str, field_name: str) -> int:
+        value = self._parse_optional_int(raw_value, field_name)
+        if value is None:
+            raise ValidationError(f"{field_name}不能为空。")
+        return value
 
     def _parse_notch_frequencies(self, raw_value: str) -> list[float]:
         if not raw_value.strip():
             return []
         values: list[float] = []
         for part in raw_value.split(","):
-            text = part.strip()
-            if not text:
+            part = part.strip()
+            if not part:
                 continue
             try:
-                values.append(float(text))
+                values.append(float(part))
             except ValueError as exc:
                 raise ValidationError("陷波频率必须是用逗号分隔的数字列表。") from exc
         return values
@@ -445,10 +604,10 @@ class FftGuiApp(ctk.CTk):
     def _render_placeholder_plot(self) -> None:
         self.figure.clear()
         axis = self.figure.add_subplot(111)
-        axis.set_title("频谱图")
-        axis.set_xlabel("频率 (Hz)")
-        axis.set_ylabel("幅值")
-        axis.text(0.5, 0.5, "导入 CSV 后点击“生成频谱”开始分析", ha="center", va="center", transform=axis.transAxes)
+        axis.set_title("分析视图")
+        axis.set_xlabel("横轴")
+        axis.set_ylabel("纵轴")
+        axis.text(0.5, 0.5, "导入 CSV 后选择功能并开始分析", ha="center", va="center", transform=axis.transAxes)
         axis.grid(True, alpha=0.25)
         self.figure.tight_layout()
         self.canvas.draw_idle()
@@ -456,9 +615,16 @@ class FftGuiApp(ctk.CTk):
     def _render_spectrum_plot(self, result: SpectrumResult) -> None:
         self.figure.clear()
 
+        ylabel = "PSD" if result.method == "welch" else ("幅值(dB)" if result.magnitude_mode == "db" else "幅值")
         if result.plot_mode == "overlay":
             axis = self.figure.add_subplot(111)
-            self._draw_overlay(axis, result)
+            for name, amplitudes in result.series_amplitudes_by_name.items():
+                axis.plot(result.frequencies_hz, amplitudes, label=name, linewidth=1.2)
+            axis.set_title("Welch PSD" if result.method == "welch" else "FFT 单边频谱")
+            axis.set_xlabel("频率 (Hz)")
+            axis.set_ylabel(ylabel)
+            axis.legend(loc="upper right")
+            axis.grid(True, alpha=0.25)
         else:
             axes = self.figure.subplots(
                 nrows=len(result.series_amplitudes_by_name),
@@ -468,23 +634,37 @@ class FftGuiApp(ctk.CTk):
             ).flatten()
             for axis, (name, amplitudes) in zip(axes, result.series_amplitudes_by_name.items()):
                 axis.plot(result.frequencies_hz, amplitudes, label=name, linewidth=1.2)
-                axis.set_ylabel("幅值(dB)" if result.magnitude_mode == "db" else "幅值")
+                axis.set_ylabel(ylabel)
                 axis.legend(loc="upper right")
                 axis.grid(True, alpha=0.25)
             axes[-1].set_xlabel("频率 (Hz)")
-            self.figure.suptitle("FFT 单边频谱")
+            self.figure.suptitle("Welch PSD" if result.method == "welch" else "FFT 单边频谱")
 
         self.figure.tight_layout()
         self.canvas.draw_idle()
 
-    def _draw_overlay(self, axis, result: SpectrumResult) -> None:
-        for name, amplitudes in result.series_amplitudes_by_name.items():
-            axis.plot(result.frequencies_hz, amplitudes, label=name, linewidth=1.2)
-        axis.set_title("FFT 单边频谱")
-        axis.set_xlabel("频率 (Hz)")
-        axis.set_ylabel("幅值(dB)" if result.magnitude_mode == "db" else "幅值")
-        axis.legend(loc="upper right")
-        axis.grid(True, alpha=0.25)
+    def _render_preview_plot(self, result: PreviewResult) -> None:
+        self.figure.clear()
+        axes = self.figure.subplots(nrows=2, ncols=1, sharex=False, squeeze=False).flatten()
+
+        axes[0].plot(result.time_axis_s, result.raw_signal, label="原始信号", linewidth=1.0)
+        axes[0].plot(result.time_axis_s, result.filtered_signal, label="滤波后信号", linewidth=1.0)
+        axes[0].set_title("时域对比")
+        axes[0].set_xlabel("时间 (s)")
+        axes[0].set_ylabel("幅值")
+        axes[0].legend(loc="upper right")
+        axes[0].grid(True, alpha=0.25)
+
+        axes[1].plot(result.frequencies_hz, result.raw_spectrum, label="原始频谱", linewidth=1.0)
+        axes[1].plot(result.frequencies_hz, result.filtered_spectrum, label="滤波后频谱", linewidth=1.0)
+        axes[1].set_title("频域对比")
+        axes[1].set_xlabel("频率 (Hz)")
+        axes[1].set_ylabel(result.y_axis_unit)
+        axes[1].legend(loc="upper right")
+        axes[1].grid(True, alpha=0.25)
+
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
 
     def _default_code_base_name(self) -> str:
         if self.current_csv_path:
