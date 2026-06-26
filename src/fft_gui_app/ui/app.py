@@ -26,7 +26,7 @@ from fft_gui_app.services.filter_preview_service import FilterPreviewService
 
 
 PLOT_MODE_LABELS = {"叠加对比": "overlay", "分别显示": "separate"}
-MAGNITUDE_MODE_LABELS = {"线性幅值": "linear", "dB": "db"}
+MAGNITUDE_MODE_LABELS = {"线性幅值": "linear", "对数幅值": "log", "dB": "db"}
 WINDOW_LABELS = {"Hann": "hann", "无窗": "none"}
 METHOD_LABELS = {"FFT 幅度谱": "fft", "Welch PSD": "welch"}
 WELCH_WINDOW_LABELS = {"Hann": "hann", "矩形窗": "boxcar"}
@@ -90,6 +90,7 @@ class FftGuiApp(ctk.CTk):
         self.magnitude_mode_var = tk.StringVar(value="线性幅值")
         self.window_var = tk.StringVar(value="Hann")
         self.method_var = tk.StringVar(value="FFT 幅度谱")
+        self.remove_mean_var = tk.BooleanVar(value=False)
 
         self.filter_kind_var = tk.StringVar(value="低通")
         self.low_cutoff_var = tk.StringVar(value="")
@@ -222,8 +223,12 @@ class FftGuiApp(ctk.CTk):
             row=3, column=1, padx=12, pady=(0, 12), sticky="ew"
         )
 
+        ctk.CTkCheckBox(parent, text="生成频谱前去均值", variable=self.remove_mean_var).grid(
+            row=4, column=0, columnspan=2, padx=12, pady=(0, 8), sticky="w"
+        )
+
         ctk.CTkButton(parent, text="生成频谱", command=self._on_generate_spectrum).grid(
-            row=4, column=0, columnspan=2, padx=12, pady=(4, 12), sticky="ew"
+            row=5, column=0, columnspan=2, padx=12, pady=(4, 12), sticky="ew"
         )
 
     def _build_preview_controls(self, parent: ctk.CTkFrame) -> None:
@@ -293,13 +298,19 @@ class FftGuiApp(ctk.CTk):
         header = ctk.CTkFrame(self.visual_frame, corner_radius=0)
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=0)
 
         self.status_label = ctk.CTkLabel(header, text="", anchor="w")
         self.status_label.grid(row=0, column=0, padx=16, pady=12, sticky="ew")
+        self.cursor_label = ctk.CTkLabel(header, text="坐标: -", anchor="e")
+        self.cursor_label.grid(row=0, column=1, padx=(0, 16), pady=12, sticky="e")
 
         self.figure = Figure(figsize=(10, 8), dpi=100)
         self.canvas = FigureCanvasTkAgg(self.figure, master=self.visual_frame)
         self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.canvas.mpl_connect("motion_notify_event", self._on_canvas_motion)
+        self.canvas.mpl_connect("scroll_event", self._on_canvas_scroll)
+        self.canvas.mpl_connect("button_press_event", self._on_canvas_button_press)
 
         toolbar_frame = ctk.CTkFrame(self.visual_frame, corner_radius=0)
         toolbar_frame.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
@@ -513,6 +524,7 @@ class FftGuiApp(ctk.CTk):
             method=method,
             plot_mode=PLOT_MODE_LABELS[self.plot_mode_var.get()],
             magnitude_mode=magnitude_mode,
+            remove_mean=bool(self.remove_mean_var.get()),
             window=WINDOW_LABELS[self.window_var.get()],
             welch_window=WELCH_WINDOW_LABELS[self.welch_window_var.get()],
             welch_nperseg=self._parse_optional_int(
@@ -611,11 +623,12 @@ class FftGuiApp(ctk.CTk):
         axis.grid(True, alpha=0.25)
         self.figure.tight_layout()
         self.canvas.draw_idle()
+        self.cursor_label.configure(text="坐标: -")
 
     def _render_spectrum_plot(self, result: SpectrumResult) -> None:
         self.figure.clear()
 
-        ylabel = "PSD" if result.method == "welch" else ("幅值(dB)" if result.magnitude_mode == "db" else "幅值")
+        ylabel = result.y_axis_unit
         if result.plot_mode == "overlay":
             axis = self.figure.add_subplot(111)
             for name, amplitudes in result.series_amplitudes_by_name.items():
@@ -642,6 +655,7 @@ class FftGuiApp(ctk.CTk):
 
         self.figure.tight_layout()
         self.canvas.draw_idle()
+        self.cursor_label.configure(text="坐标: -")
 
     def _render_preview_plot(self, result: PreviewResult) -> None:
         self.figure.clear()
@@ -665,6 +679,37 @@ class FftGuiApp(ctk.CTk):
 
         self.figure.tight_layout()
         self.canvas.draw_idle()
+        self.cursor_label.configure(text="坐标: -")
+
+    def _on_canvas_motion(self, event) -> None:
+        if event.inaxes is None or event.xdata is None or event.ydata is None:
+            self.cursor_label.configure(text="坐标: -")
+            return
+        self.cursor_label.configure(text=f"坐标: x={event.xdata:.4f}, y={event.ydata:.4f}")
+
+    def _on_canvas_scroll(self, event) -> None:
+        if event.inaxes is None or event.xdata is None or event.ydata is None:
+            return
+
+        scale_factor = 1.2 if event.button == "up" else (1 / 1.2 if event.button == "down" else 1.0)
+        if scale_factor == 1.0:
+            return
+
+        axis = event.inaxes
+        x_limits = axis.get_xlim()
+        y_limits = axis.get_ylim()
+
+        new_x_half_range = (x_limits[1] - x_limits[0]) / 2.0 / scale_factor
+        new_y_half_range = (y_limits[1] - y_limits[0]) / 2.0 / scale_factor
+
+        axis.set_xlim(event.xdata - new_x_half_range, event.xdata + new_x_half_range)
+        axis.set_ylim(event.ydata - new_y_half_range, event.ydata + new_y_half_range)
+        self.canvas.draw_idle()
+
+    def _on_canvas_button_press(self, event) -> None:
+        if event.dblclick and event.button == 1:
+            self.toolbar.home()
+            self.canvas.draw_idle()
 
     def _default_code_base_name(self) -> str:
         if self.current_csv_path:

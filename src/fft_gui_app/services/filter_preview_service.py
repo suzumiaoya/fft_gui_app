@@ -46,6 +46,7 @@ class FilterPreviewService:
             method="fft",
             plot_mode="overlay",
             magnitude_mode="linear",
+            remove_mean=False,
             window="hann",
             welch_window="hann",
             welch_nperseg=None,

@@ -36,6 +36,8 @@ class FftAnalyzer:
 
         for signal_column in signal_columns:
             signal = frame[signal_column].to_numpy(dtype=float)
+            if spectrum_config.remove_mean:
+                signal = signal - float(np.mean(signal))
             if spectrum_config.method == "fft":
                 frequencies_hz, spectrum_values = self._compute_fft_spectrum(
                     signal_values=signal,
@@ -63,9 +65,7 @@ class FftAnalyzer:
             method=spectrum_config.method,
             plot_mode=spectrum_config.plot_mode,
             magnitude_mode=spectrum_config.magnitude_mode,
-            y_axis_unit="PSD" if spectrum_config.method == "welch" else (
-                "dB" if spectrum_config.magnitude_mode == "db" else "幅值"
-            ),
+            y_axis_unit=self._resolve_y_axis_unit(spectrum_config),
         )
 
     def _build_window(self, window: str, sample_count: int) -> np.ndarray:
@@ -104,8 +104,10 @@ class FftAnalyzer:
 
         if spectrum_config.magnitude_mode == "db":
             amplitudes = 20.0 * np.log10(np.maximum(amplitudes, 1e-12))
+        elif spectrum_config.magnitude_mode == "log":
+            amplitudes = np.log10(np.maximum(amplitudes, 1e-12))
         elif spectrum_config.magnitude_mode != "linear":
-            raise ValidationError("FFT 只支持 linear 或 db 幅值模式。")
+            raise ValidationError("FFT 只支持 linear、log 或 db 幅值模式。")
 
         return frequencies_hz, amplitudes
 
@@ -116,9 +118,6 @@ class FftAnalyzer:
         sample_count: int,
         spectrum_config: SpectrumConfig,
     ) -> tuple[pd.Series, np.ndarray]:
-        if spectrum_config.magnitude_mode != "linear":
-            raise ValidationError("Welch PSD 仅支持线性显示。")
-
         nperseg = spectrum_config.welch_nperseg or min(1024, sample_count)
         noverlap = spectrum_config.welch_noverlap
         if noverlap is None:
@@ -141,4 +140,24 @@ class FftAnalyzer:
             return_onesided=True,
             scaling="density",
         )
+        if spectrum_config.magnitude_mode == "db":
+            psd = 10.0 * np.log10(np.maximum(psd, 1e-24))
+        elif spectrum_config.magnitude_mode == "log":
+            psd = np.log10(np.maximum(psd, 1e-24))
+        elif spectrum_config.magnitude_mode != "linear":
+            raise ValidationError("Welch PSD 只支持 linear、log 或 db 幅值模式。")
         return pd.Series(frequencies_hz, name="frequency_hz"), psd
+
+    def _resolve_y_axis_unit(self, spectrum_config: SpectrumConfig) -> str:
+        if spectrum_config.method == "welch":
+            if spectrum_config.magnitude_mode == "db":
+                return "PSD (dB/Hz)"
+            if spectrum_config.magnitude_mode == "log":
+                return "log10(PSD)"
+            return "PSD"
+
+        if spectrum_config.magnitude_mode == "db":
+            return "幅值(dB)"
+        if spectrum_config.magnitude_mode == "log":
+            return "log10(幅值)"
+        return "幅值"

@@ -18,6 +18,7 @@ class SpectrumConfig:
     method: str
     plot_mode: str
     magnitude_mode: str
+    remove_mean: bool
     window: str
     welch_window: str
     welch_nperseg: int | None

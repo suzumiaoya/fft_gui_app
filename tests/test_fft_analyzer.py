@@ -27,6 +27,7 @@ class FftAnalyzerTests(unittest.TestCase):
                 method="fft",
                 plot_mode="overlay",
                 magnitude_mode="linear",
+                remove_mean=False,
                 window="none",
                 welch_window="hann",
                 welch_nperseg=None,
@@ -54,6 +55,7 @@ class FftAnalyzerTests(unittest.TestCase):
                 method="welch",
                 plot_mode="overlay",
                 magnitude_mode="linear",
+                remove_mean=False,
                 window="hann",
                 welch_window="hann",
                 welch_nperseg=512,
@@ -79,6 +81,7 @@ class FftAnalyzerTests(unittest.TestCase):
                     method="welch",
                     plot_mode="overlay",
                     magnitude_mode="linear",
+                    remove_mean=False,
                     window="hann",
                     welch_window="hann",
                     welch_nperseg=16,
@@ -102,6 +105,7 @@ class FftAnalyzerTests(unittest.TestCase):
                 method="fft",
                 plot_mode="separate",
                 magnitude_mode="linear",
+                remove_mean=False,
                 window="none",
                 welch_window="hann",
                 welch_nperseg=None,
@@ -112,6 +116,74 @@ class FftAnalyzerTests(unittest.TestCase):
 
         self.assertEqual(result.plot_mode, "separate")
         self.assertEqual(set(result.series_amplitudes_by_name.keys()), {"sig_a", "sig_b"})
+
+    def test_remove_mean_reduces_dc_peak(self) -> None:
+        sample_rate_hz = 128.0
+        sample_count = 256
+        time_axis = np.arange(sample_count) / sample_rate_hz
+        signal_values = 10.0 + np.sin(2 * np.pi * 8.0 * time_axis)
+        frame = pd.DataFrame({"sig": signal_values})
+
+        without_remove_mean = self.analyzer.compute(
+            frame=frame,
+            signal_columns=["sig"],
+            spectrum_config=SpectrumConfig(
+                method="fft",
+                plot_mode="overlay",
+                magnitude_mode="linear",
+                remove_mean=False,
+                window="none",
+                welch_window="hann",
+                welch_nperseg=None,
+                welch_noverlap=None,
+            ),
+            sample_rate_hz=sample_rate_hz,
+        )
+        with_remove_mean = self.analyzer.compute(
+            frame=frame,
+            signal_columns=["sig"],
+            spectrum_config=SpectrumConfig(
+                method="fft",
+                plot_mode="overlay",
+                magnitude_mode="linear",
+                remove_mean=True,
+                window="none",
+                welch_window="hann",
+                welch_nperseg=None,
+                welch_noverlap=None,
+            ),
+            sample_rate_hz=sample_rate_hz,
+        )
+
+        dc_without = float(without_remove_mean.series_amplitudes_by_name["sig"].iloc[0])
+        dc_with = float(with_remove_mean.series_amplitudes_by_name["sig"].iloc[0])
+        self.assertGreater(dc_without, 5.0)
+        self.assertLess(dc_with, 1e-6)
+
+    def test_log_magnitude_mode_is_supported(self) -> None:
+        sample_rate_hz = 128.0
+        sample_count = 256
+        time_axis = np.arange(sample_count) / sample_rate_hz
+        frame = pd.DataFrame({"sig": np.sin(2 * np.pi * 16.0 * time_axis)})
+
+        result = self.analyzer.compute(
+            frame=frame,
+            signal_columns=["sig"],
+            spectrum_config=SpectrumConfig(
+                method="fft",
+                plot_mode="overlay",
+                magnitude_mode="log",
+                remove_mean=False,
+                window="hann",
+                welch_window="hann",
+                welch_nperseg=None,
+                welch_noverlap=None,
+            ),
+            sample_rate_hz=sample_rate_hz,
+        )
+
+        self.assertEqual(result.y_axis_unit, "log10(幅值)")
+        self.assertEqual(len(result.frequencies_hz), len(result.series_amplitudes_by_name["sig"]))
 
 
 if __name__ == "__main__":
