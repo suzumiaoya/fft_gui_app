@@ -36,15 +36,6 @@
   - 导出 STM32 可用的 `Direct Form II Transposed` 流式 biquad 级联实现
   - 支持 `apply_filter_sample` / `apply_filter_block`
 
-## Screenshots
-
-当前仓库尚未附带截图。后续建议补充：
-
-- 主界面总览
-- 多列频谱叠加图
-- 滤波预览页
-- 导出 C 代码示例
-
 ## Requirements
 
 - Python `>= 3.13`
@@ -188,23 +179,6 @@ python -m unittest discover -s tests -v
 - 参数预设与项目配置保存
 - 图像导出 / 报告导出
 - 批量处理多个 CSV
-
-## Open Source
-
-当前仓库已经补齐一套适合开源协作的基础文件：
-
-- `LICENSE`（MIT）
-- `CONTRIBUTING.md`
-- `CHANGELOG.md`
-- `.gitignore`
-- GitHub issue / PR 模板
-
-如果准备正式发布到 GitHub，下一步仍建议补充：
-
-- 项目截图
-- Release 说明
-- 示例 CSV 数据
-- GitHub Actions CI
 
 ## Contributing
 
