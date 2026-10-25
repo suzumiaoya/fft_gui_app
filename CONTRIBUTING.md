@@ -35,7 +35,7 @@ python -m pip install -e .
 运行应用：
 
 ```powershell
-python -m fft_gui_app
+.\start.bat
 ```
 
 运行测试：

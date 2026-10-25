@@ -40,5 +40,6 @@ Thumbs.db
 exports/
 
 # Test and runtime artifacts
+/tests/
 .coverage
 htmlcov/

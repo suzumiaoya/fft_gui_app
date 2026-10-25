@@ -51,24 +51,30 @@
 
 ## Quick Start
 
-在项目根目录运行：
+Windows 统一使用项目根目录的 `start.bat` 启动。可以双击该文件，或在 PowerShell 中运行：
 
 ```powershell
-python -m fft_gui_app
+.\start.bat
 ```
 
-或者直接双击：
+脚本会查找 Python Launcher 和 PATH 中满足 `pyproject.toml` 要求的 Python（当前为 `>=3.13`），优先复用项目的 `.venv`。首次启动会创建 `.venv`，按 `pyproject.toml` 安装依赖；后续启动会检查版本，仅在缺失或版本不满足时安装。通过依赖一致性与导入检查后自动打开应用。所有安装都在项目虚拟环境中进行。
 
-```text
-run.bat
-```
-
-如果你想先安装为本地可调用脚本：
+同时支持从当前 Conda 环境和 `%USERPROFILE%\.conda\environments.txt` 查找 Python。也可以先用 Miniconda 在项目内创建环境，再运行 `start.bat`：
 
 ```powershell
-python -m pip install -e .
-fft-gui-app
+conda create --prefix .\.venv python=3.13 pip tk -y
+.\start.bat
 ```
+
+首次安装依赖需要联网。若未找到兼容 Python，请先从 <https://www.python.org/downloads/> 安装 Python 3.13 或更新版本，并启用 Tcl/Tk、pip 和 Python Launcher 或 PATH 选项。安装失败时会保留错误信息，修复网络或 Python 后重新运行即可。
+
+只准备和检查环境、不打开 GUI：
+
+```powershell
+.\start.bat -CheckOnly
+```
+
+`tools/` 中的脚本负责内部环境检测和依赖管理，由 `start.bat` 调用。原有的 `run.bat` 和安装后的命令行启动入口已移除。
 
 ## Usage
 
@@ -130,17 +136,23 @@ void apply_filter(const FilterConfig *config, FilterState *state, const float *i
 ## Project Structure
 
 ```text
-fft_gui/
-├─ fft_gui_app/                # 顶层模块入口兼容层
+fft_gui_app/
+├─ start.bat                   # 唯一对外启动入口
+├─ tools/
+│  ├─ start.ps1                # 内部脚本：查找兼容 Python 环境
+│  └─ start_app.py             # 内部脚本：检查依赖并启动 GUI
+├─ fft_gui_app/                # 源码导入兼容层，供内部模块启动使用
 ├─ src/fft_gui_app/
 │  ├─ services/                # CSV、FFT、滤波预览、代码生成等服务
 │  ├─ ui/                      # CustomTkinter GUI
 │  ├─ models.py                # 主要数据模型
 │  ├─ exceptions.py            # 业务异常
 │  └─ __main__.py              # 包入口
-├─ tests/                      # unittest 测试
-├─ pyproject.toml
-├─ run.bat
+├─ docs/                       # 开发文档
+├─ tests/                      # 本地测试；新增文件由 Git 忽略
+├─ .venv/                      # 本地 Python / Conda 环境，由 Git 忽略
+├─ .gitignore
+├─ pyproject.toml              # Python 版本、依赖和包配置
 └─ README.md
 ```
 
@@ -149,7 +161,7 @@ fft_gui/
 运行全部测试：
 
 ```powershell
-python -m unittest discover -s tests -v
+python -B -m unittest discover -s tests -v
 ```
 
 当前测试覆盖：
@@ -160,6 +172,8 @@ python -m unittest discover -s tests -v
 - 滤波预处理与滤波预览
 - STM32 C 代码生成
 - 导出 SOS 系数与 DF2T 数值一致性
+
+`tests/` 已加入 `.gitignore`，新增测试文件只保留在本地；仓库原先已跟踪的测试仍保留。环境检查可使用 `start.bat -CheckOnly`，不会打开应用窗口。
 
 ## Development Notes
 

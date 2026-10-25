@@ -16,9 +16,6 @@ dependencies = [
     "scipy>=1.17.1",
 ]
 
-[project.scripts]
-fft-gui-app = "fft_gui_app.__main__:main"
-
 [tool.setuptools]
 package-dir = {"" = "src"}
 

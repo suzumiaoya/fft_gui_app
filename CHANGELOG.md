@@ -8,6 +8,9 @@ The format loosely follows Keep a Changelog.
 
 ### Added
 
+- Windows `start.bat` launcher with Python and Conda environment discovery
+- Automatic Python version and dependency checks against `pyproject.toml`, with missing or incompatible dependencies installed in the project-local `.venv`
+- Dependency consistency and import checks before GUI startup, plus `-CheckOnly` mode for environment preparation without opening the GUI
 - GitHub-facing README and Vibe coding development guide
 - Optional mean removal before spectrum generation
 - Log magnitude spectrum option
@@ -19,8 +22,15 @@ The format loosely follows Keep a Changelog.
 
 ### Changed
 
+- Standardized application startup on the root-level `start.bat`, with internal bootstrap scripts grouped under `tools/`
+- Updated README and contributing instructions for automatic startup and manual Conda environment setup
+- Added `tests/` to `.gitignore` for new local test files; previously tracked tests remain in the repository
 - Code generation upgraded from placeholder output to runnable float32 filter implementation
 - Project documentation expanded for open-source collaboration
+
+### Removed
+
+- Legacy `run.bat` launcher and installed `fft-gui-app` console entry point
 
 ## [0.1.0] - 2026-06-26
 
